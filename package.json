@@ -1,0 +1,17 @@
+{
+  "name": "bot-exercito-hierarquia",
+  "version": "1.0.0",
+  "description": "Bot de hierarquia do Exército - Discord",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "discord.js": "^14.25.1",
+    "dotenv": "^17.2.3"
+  }
+}

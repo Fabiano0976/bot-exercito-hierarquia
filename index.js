@@ -1,5 +1,4 @@
 require("dotenv").config();
-
 const fs = require("fs");
 const path = require("path");
 
@@ -7,23 +6,17 @@ const {
   Client,
   GatewayIntentBits,
   Partials,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  EmbedBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  StringSelectMenuBuilder,
   PermissionsBitField,
+  SlashCommandBuilder,
+  REST,
+  Routes,
 } = require("discord.js");
 
 const cfg = require("./config");
 
-// ================== FIXOS ==================
+/* ================== CONFIG FIXA ================== */
 const ROLE_APROVADO_ID = "1327341545661267980"; // 【🔰】Exército Marcone
 
-// TAGS DE NICK
 const TAGS = {
   RECRUTA: "[REC]",
   SOLDADO: "[SD]",
@@ -45,68 +38,6 @@ const TAGS = {
   MAR: "[MAR]",
 };
 
-function tagByValue(v) {
-  return TAGS[v] ?? "[EB]";
-}
-function makeNick({ value, nome, id }) {
-  return `${tagByValue(value)} ${nome} | ${id}`;
-}
-
-// ================== CLIENT ==================
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
-  partials: [Partials.GuildMember],
-});
-
-// ================== HELPERS ==================
-function isStaff(member) {
-  if (Array.isArray(cfg.STAFF_ROLE_IDS) && cfg.STAFF_ROLE_IDS.length > 0) {
-    return cfg.STAFF_ROLE_IDS.some((rid) => member.roles.cache.has(rid));
-  }
-  return member.permissions.has(PermissionsBitField.Flags.Administrator);
-}
-
-function patenteLabelByValue(v) {
-  return cfg.PATENTES.find((p) => p.value === v)?.label ?? v;
-}
-function patenteRoleIdByValue(v) {
-  return cfg.PATENTES.find((p) => p.value === v)?.roleId ?? null;
-}
-
-const RANK_ROLE_IDS = new Set(
-  (cfg.PATENTES || []).map((p) => p.roleId).filter(Boolean)
-);
-
-// ================== PAINEL FIXO ==================
-async function ensurePainelFixo() {
-  const canalId = process.env.CANAL_PAINEL_ID;
-  if (!canalId) return;
-
-  const channel = await client.channels.fetch(canalId);
-
-  const embed = new EmbedBuilder()
-    .setTitle("📋 Solicitação de Acesso")
-    .setDescription("Clique no botão abaixo para iniciar sua solicitação.")
-    .setFooter({ text: "Recursos Humanos - Exército" });
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("btn_solicitar")
-      .setLabel("SOLICITAR")
-      .setStyle(ButtonStyle.Success)
-  );
-
-  const msgs = await channel.messages.fetch({ limit: 5 });
-  const old = msgs.find((m) => m.author.id === client.user.id);
-
-  if (old) {
-    await old.edit({ embeds: [embed], components: [row] });
-  } else {
-    await channel.send({ embeds: [embed], components: [row] });
-  }
-}
-
-// ================== HIERARQUIA ==================
 const HIER_GROUPS = [
   { title: "ＯＦＩＣＩＡＩＳ ＧＥＮＥＲＡＩＳ", ranks: ["MAR", "GEX", "GDIV", "GBRIG"] },
   { title: "ＯＦＩＣＩＡＩＳ ＳＵＰＥＲＩＯＲＥＳ", ranks: ["CEL", "TCEL", "MAJ"] },
@@ -139,11 +70,40 @@ function rankTitle(v) {
   return map[v] ?? v;
 }
 
-async function ensureHierarquiaFixa(guild) {
+function patenteRoleIdByValue(v) {
+  return cfg.PATENTES.find(p => p.value === v)?.roleId ?? null;
+}
+
+function isStaff(member) {
+  if (cfg.STAFF_ROLE_IDS?.length) {
+    return cfg.STAFF_ROLE_IDS.some(id => member.roles.cache.has(id));
+  }
+  return member.permissions.has(PermissionsBitField.Flags.Administrator);
+}
+
+/* ================== CLIENT ================== */
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers, // 🔥 OBRIGATÓRIO
+  ],
+  partials: [Partials.GuildMember],
+});
+
+/* ================== HIERARQUIA ================== */
+let lastFetch = 0;
+
+async function ensureHierarquiaFixa(guild, force = false) {
   const canalId = process.env.CANAL_HIERARQUIA_ID;
   if (!canalId) return;
 
   const channel = await client.channels.fetch(canalId);
+
+  const now = Date.now();
+  if (force || now - lastFetch > 5 * 60 * 1000) {
+    await guild.members.fetch(); // 🔥 resolve o bug dos @ faltando
+    lastFetch = now;
+  }
 
   let text = `**Hierarquia do Exército**\n\n`;
 
@@ -152,99 +112,70 @@ async function ensureHierarquiaFixa(guild) {
 
     for (const r of g.ranks) {
       const roleId = patenteRoleIdByValue(r);
-      const role = roleId ? guild.roles.cache.get(roleId) : null;
-
       text += `**${rankTitle(r)}**\n`;
 
-      if (!role || role.members.size === 0) {
+      if (!roleId) {
         text += `—\n\n`;
-      } else {
-        text += [...role.members.values()].map(m => `<@${m.id}>`).join("\n") + "\n\n";
+        continue;
       }
+
+      const ids = guild.members.cache
+        .filter(m => m.roles.cache.has(roleId))
+        .map(m => `<@${m.id}>`);
+
+      text += ids.length ? ids.join("\n") + "\n\n" : "—\n\n";
     }
     text += "\n";
   }
 
-  const msgs = await channel.messages.fetch({ limit: 5 });
-  const old = msgs.find((m) => m.author.id === client.user.id);
+  const msgs = await channel.messages.fetch({ limit: 10 });
+  const botMsg = msgs.find(m => m.author.id === client.user.id);
 
-  if (old) await old.edit({ content: text });
+  if (botMsg) await botMsg.edit({ content: text });
   else await channel.send({ content: text });
 }
 
-// ================== READY ==================
+/* ================== SLASH COMMAND ================== */
+const commands = [
+  new SlashCommandBuilder()
+    .setName("reset-hierarquia")
+    .setDescription("Força o reset e sincronização da hierarquia"),
+].map(c => c.toJSON());
+
 client.once("ready", async () => {
   console.log(`✅ Logado como ${client.user.tag}`);
 
-  await ensurePainelFixo();
-  await ensureHierarquiaFixa(client.guilds.cache.first());
+  const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
+  await rest.put(
+    Routes.applicationCommands(client.user.id),
+    { body: commands }
+  );
 
-  // registra comando
-  await client.application.commands.set([
-    {
-      name: "reset-hierarquia",
-      description: "Força a reconstrução da hierarquia do Exército",
-    },
-  ]);
-
-  setInterval(() => ensurePainelFixo().catch(() => {}), 5 * 60 * 1000);
+  const ch = await client.channels.fetch(process.env.CANAL_HIERARQUIA_ID);
+  if (ch?.guild) await ensureHierarquiaFixa(ch.guild, true);
 });
 
-// ================== AUTO UPDATE AO MUDAR ROLE ==================
-client.on("guildMemberUpdate", async (oldM, newM) => {
-  const oldIds = new Set(oldM.roles.cache.map(r => r.id));
-  const newIds = new Set(newM.roles.cache.map(r => r.id));
+/* ================== INTERACTIONS ================== */
+client.on("interactionCreate", async interaction => {
+  if (!interaction.isChatInputCommand()) return;
 
-  const changed =
-    [...oldIds].some(id => !newIds.has(id)) ||
-    [...newIds].some(id => !oldIds.has(id));
+  if (interaction.commandName === "reset-hierarquia") {
+    if (!isStaff(interaction.member)) {
+      return interaction.reply({ content: "⛔ Sem permissão.", ephemeral: true });
+    }
 
-  if (!changed) return;
-
-  const affected =
-    [...oldIds, ...newIds].some(id => RANK_ROLE_IDS.has(id));
-
-  if (affected) {
-    await ensureHierarquiaFixa(newM.guild);
+    await interaction.reply({ content: "🔄 Sincronizando hierarquia...", ephemeral: true });
+    await ensureHierarquiaFixa(interaction.guild, true);
+    await interaction.editReply("✅ Hierarquia resetada e sincronizada!");
   }
 });
 
-// ================== INTERACTIONS ==================
-client.on("interactionCreate", async (interaction) => {
+/* ================== AUTO SYNC ================== */
+client.on("guildMemberUpdate", async (o, n) => {
   try {
-
-    // ===== RESET HIERARQUIA =====
-    if (interaction.isChatInputCommand() && interaction.commandName === "reset-hierarquia") {
-      if (!isStaff(interaction.member)) {
-        return interaction.reply({ content: "⛔ Sem permissão.", ephemeral: true });
-      }
-      await interaction.reply({ content: "🔄 Resetando hierarquia...", ephemeral: true });
-      await ensureHierarquiaFixa(interaction.guild);
-      return interaction.editReply("✅ Hierarquia resetada.");
-    }
-
-    // ===== BOTÃO SOLICITAR =====
-    if (interaction.isButton() && interaction.customId === "btn_solicitar") {
-      const modal = new ModalBuilder()
-        .setCustomId("modal_solicitacao")
-        .setTitle("Solicitação de Acesso - Exército");
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("nome").setLabel("Nome").setStyle(TextInputStyle.Short).setRequired(true)
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("id").setLabel("ID").setStyle(TextInputStyle.Short).setRequired(true)
-        )
-      );
-
-      return interaction.showModal(modal);
-    }
-
-  } catch (e) {
-    console.error(e);
-  }
+    await ensureHierarquiaFixa(n.guild);
+  } catch {}
 });
 
-// ================== LOGIN ==================
+/* ================== LOGIN ================== */
 client.login(process.env.DISCORD_TOKEN);
